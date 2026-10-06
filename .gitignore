@@ -2,3 +2,5 @@ utility
 bin
 .venv
 .DS_Store
+*.out 
+
