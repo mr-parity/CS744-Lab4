@@ -1,3 +1,4 @@
+#include "http-parser.h"
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <stdio.h>
@@ -7,6 +8,45 @@
 #include <unistd.h>
 
 #define BACKLOGS 5
+
+void requestHandler(char buffer[]) {
+  ParsedRequest req;
+  parse_http_request(buffer, &req);
+
+  // Print parsed output to verify
+  printf("--- Request Line ---\n");
+  printf("Method:  %s\n", req.request_line.method);
+  printf("URI:     %s\n", req.request_line.uri);
+  printf("Version: %s\n\n", req.request_line.version);
+
+  printf("--- Headers parsed: %d ---\n", req.header_count);
+  for (int i = 0; i < req.header_count; i++) {
+    printf("%s -> %s\n", req.headers[i].key, req.headers[i].value);
+  }
+
+  if (req.body) {
+    printf("\n--- Body ---\n%s\n\n", req.body);
+  }
+}
+
+char *responseHandler() {
+  const char *body =
+      "{\"status\":\"success\",\"message\":\"Hello from C server!\"}";
+  size_t len = strlen(body);
+  size_t response_size = 0;
+
+  char *http_response = create_http_response(
+
+      "200 OK", "text/html", body, len, &response_size
+
+  );
+
+  if (http_response) {
+    return http_response;
+  }
+
+  return NULL;
+}
 
 int main() {
   printf("Welcome to socket programming!\n");
@@ -62,63 +102,68 @@ int main() {
     exit(1);
   }
 
-  // accept incoming connection
+  while (1) {
 
-  struct sockaddr_in clientAddr;
-  int addrSize = sizeof(clientAddr);
+    // accept incoming connection
 
-  int clientFd = accept(
+    struct sockaddr_in clientAddr;
+    int addrSize = sizeof(clientAddr);
 
-      serverFd,                       // fd of socket which is listening
-      (struct sockaddr *)&clientAddr, // pointer to sockaddr
-      (socklen_t *)&addrSize          // ptr to size of sockaddr
+    int clientFd = accept(
 
-  );
+        serverFd,                       // fd of socket which is listening
+        (struct sockaddr *)&clientAddr, // pointer to sockaddr
+        (socklen_t *)&addrSize          // ptr to size of sockaddr
 
-  if (clientFd < 0) {
-    perror("accept");
-    close(serverFd);
-  }
+    );
 
-  // communicate lets go
-  // recv
-  char buffer[1024];
-  int bytesRecv = recv(clientFd, buffer, sizeof(buffer) - 1, 0);
+    if (clientFd < 0) {
+      perror("accept");
+      close(serverFd);
+    }
 
-  if (bytesRecv < 0) {
-    // close
-    perror("read");
+    // communicate lets go
+    // recv
+    char buffer[1024];
+    int bytesRecv = recv(clientFd, buffer, sizeof(buffer) - 1, 0);
+
+    if (bytesRecv < 0) {
+      // close
+      perror("read");
+      close(clientFd);
+      close(serverFd);
+      exit(1);
+    }
+
+    buffer[1023] = '\n';
+
+    requestHandler(buffer);
+
+    //@unused: replaced by requestHandler()
+    // printf("[SERVER] Recieved data \n %s", buffer);
+
+    // Prepare the response
+    char *http_response = responseHandler();
+
+    // Using SEND to transmit data back to curl
+    // Flag 0 makes send behave like standard write()
+    int bytes_sent = send(
+
+        clientFd, http_response, strlen(http_response), 0
+
+    );
+
+    if (bytes_sent < 0) {
+      perror("Send failed");
+    }
+
+    // cleanup
+    free(http_response);
+
     close(clientFd);
-    close(serverFd);
-    exit(1);
-  }
-
-  buffer[1023] = '\n';
-
-  printf("[SERVER] Recieved data \n %s", buffer);
-
-  // Prepare the response
-  char *http_response = "HTTP/1.1 200 OK\r\n"
-                        "Content-Type: text/plain\r\n"
-                        "Content-Length: 18\r\n"
-                        "Connection: close\r\n"
-                        "\r\n"
-                        "Hello from send()!";
-
-  // 7. Using SEND to transmit data back to curl
-  // Flag 0 makes send behave like standard write()
-  int bytes_sent = send(
-
-      clientFd, http_response, strlen(http_response), 0
-
-  );
-
-  if (bytes_sent < 0) {
-    perror("Send failed");
   }
 
   // cleanup
-  close(clientFd);
   close(serverFd);
 
   return 0;
