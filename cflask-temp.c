@@ -1,37 +1,64 @@
+#include "functions.h"
+#include "functionslist.h"
 #include "http-parser.h"
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #define BACKLOGS 5
 
-void requestHandler(char buffer[]) {
+char *requestHandler(char buffer[]) {
   ParsedRequest req;
   parse_http_request(buffer, &req);
 
   // Print parsed output to verify
-  printf("--- Request Line ---\n");
-  printf("Method:  %s\n", req.request_line.method);
-  printf("URI:     %s\n", req.request_line.uri);
-  printf("Version: %s\n\n", req.request_line.version);
+  // printf("--- Request Line ---\n");
+  // printf("Method:  %s\n", req.request_line.method);
+  // printf("URI:     %s\n", req.request_line.uri);
+  // printf("Version: %s\n\n", req.request_line.version);
 
-  printf("--- Headers parsed: %d ---\n", req.header_count);
-  for (int i = 0; i < req.header_count; i++) {
-    printf("%s -> %s\n", req.headers[i].key, req.headers[i].value);
+  // printf("--- Headers parsed: %d ---\n", req.header_count);
+  // for (int i = 0; i < req.header_count; i++) {
+  //   printf("%s -> %s\n", req.headers[i].key, req.headers[i].value);
+  // }
+
+  // if (req.body) {
+  //   printf("\n--- Body ---\n%s\n\n", req.body);
+  // }
+
+  long threadid = (long)pthread_self();
+
+  // handle request
+  char *uri = req.request_line.uri;
+  int functionIndex = -1;
+
+  for (int i = 0; i < NUM_ROUTES; i++) {
+    if (strcmp(routes[i].route, uri) == 0) {
+      functionIndex = routes[i].index;
+      break;
+    }
   }
 
-  if (req.body) {
-    printf("\n--- Body ---\n%s\n\n", req.body);
+  if (functionIndex == -1) {
+    // printf("Invalid route\n");
+    printf("[%ld] GET %s 404 Not found\n", threadid, uri);
+    return "404";
   }
+
+  char *out = functions[functionIndex]();
+  printf("[%ld] GET %s 200 OK \n", threadid, uri);
+
+  return out;
 }
 
-char *responseHandler() {
-  const char *body =
-      "{\"status\":\"success\",\"message\":\"Hello from C server!\"}";
+char *responseHandler(char *value) {
+  const char *body = value;
   size_t len = strlen(body);
   size_t response_size = 0;
 
@@ -48,7 +75,18 @@ char *responseHandler() {
   return NULL;
 }
 
-int main() {
+int main(int argc, char *argv[]) {
+
+  if (argc < 3) {
+    printf("[SERVER] Invalid args passed <usage>: <executable> <s/m> <PORT>");
+    exit(1);
+  }
+
+  char mode = *argv[1];
+  char *modeValue = mode == 's' ? "single-threaded" : "multi-threaded";
+
+  int PORT = atoi(argv[2]);
+
   printf("Welcome to socket programming!\n");
 
   // create the socket
@@ -70,7 +108,7 @@ int main() {
 
   memset(&addr, 0, sizeof(addr)); // make struct all zeroes
   addr.sin_family = AF_INET;
-  addr.sin_port = htons(8080);
+  addr.sin_port = htons(PORT);
   addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
   int bindStatusCode = bind(
@@ -81,7 +119,8 @@ int main() {
 
   );
 
-  printf("[SERVER] Started listening at 127.0.0.1:8080\n");
+  printf("[SERVER] Started listening at 127.0.0.1:%d , [%s]\n", PORT,
+         modeValue);
 
   if (bindStatusCode < 0) {
     perror("bind");
@@ -135,15 +174,15 @@ int main() {
       exit(1);
     }
 
-    buffer[1023] = '\n';
+    buffer[bytesRecv] = '\n';
 
-    requestHandler(buffer);
+    char *msg = requestHandler(buffer);
 
     //@unused: replaced by requestHandler()
     // printf("[SERVER] Recieved data \n %s", buffer);
 
     // Prepare the response
-    char *http_response = responseHandler();
+    char *http_response = responseHandler(msg);
 
     // Using SEND to transmit data back to curl
     // Flag 0 makes send behave like standard write()
