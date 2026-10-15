@@ -17,21 +17,6 @@ char *requestHandler(char buffer[]) {
   ParsedRequest req;
   parse_http_request(buffer, &req);
 
-  // Print parsed output to verify
-  // printf("--- Request Line ---\n");
-  // printf("Method:  %s\n", req.request_line.method);
-  // printf("URI:     %s\n", req.request_line.uri);
-  // printf("Version: %s\n\n", req.request_line.version);
-
-  // printf("--- Headers parsed: %d ---\n", req.header_count);
-  // for (int i = 0; i < req.header_count; i++) {
-  //   printf("%s -> %s\n", req.headers[i].key, req.headers[i].value);
-  // }
-
-  // if (req.body) {
-  //   printf("\n--- Body ---\n%s\n\n", req.body);
-  // }
-
   long threadid = (long)pthread_self();
 
   // handle request
@@ -47,12 +32,12 @@ char *requestHandler(char buffer[]) {
 
   if (functionIndex == -1) {
     // printf("Invalid route\n");
-    printf("[%ld] GET %s 404 Not found\n", threadid, uri);
+    printf("[thread %ld] GET %s 404 Not found\n", threadid, uri);
     return "404";
   }
 
   char *out = functions[functionIndex]();
-  printf("[%ld] GET %s 200 OK \n", threadid, uri);
+  printf("[thread %ld] GET %s 200 OK \n", threadid, uri);
 
   return out;
 }
@@ -75,6 +60,52 @@ char *responseHandler(char *value) {
   return NULL;
 }
 
+// worker thread function
+void *handleHttpThread(void *arg) {
+
+  int clientFd = *(int *)(arg);
+  free(arg);
+  // communicate lets go
+  // recv
+  char buffer[1024];
+  int bytesRecv = recv(clientFd, buffer, sizeof(buffer) - 1, 0);
+
+  if (bytesRecv < 0) {
+    // close
+    perror("read");
+    close(clientFd);
+    pthread_exit(NULL);
+  }
+
+  buffer[bytesRecv] = '\n';
+
+  char *msg = requestHandler(buffer);
+
+  //@unused: replaced by requestHandler()
+  // printf("[SERVER] Recieved data \n %s", buffer);
+
+  // Prepare the response
+  char *http_response = responseHandler(msg);
+
+  // Using SEND to transmit data back to curl
+  // Flag 0 makes send behave like standard write()
+  int bytes_sent = send(
+
+      clientFd, http_response, strlen(http_response), 0
+
+  );
+
+  if (bytes_sent < 0) {
+    perror("Send failed");
+  }
+
+  // cleanup
+  free(http_response);
+
+  close(clientFd);
+  pthread_exit(NULL);
+}
+
 int main(int argc, char *argv[]) {
 
   if (argc < 3) {
@@ -83,11 +114,14 @@ int main(int argc, char *argv[]) {
   }
 
   char mode = *argv[1];
+
+  if (!(mode == 's' || mode == 'm')) {
+    printf("Invalid mode passed !\n");
+    exit(1);
+  }
   char *modeValue = mode == 's' ? "single-threaded" : "multi-threaded";
 
   int PORT = atoi(argv[2]);
-
-  printf("Welcome to socket programming!\n");
 
   // create the socket
   int serverFd = socket(
@@ -161,45 +195,59 @@ int main(int argc, char *argv[]) {
       close(serverFd);
     }
 
-    // communicate lets go
-    // recv
-    char buffer[1024];
-    int bytesRecv = recv(clientFd, buffer, sizeof(buffer) - 1, 0);
+    // single threaded mode
+    if (mode == 's') {
 
-    if (bytesRecv < 0) {
-      // close
-      perror("read");
+      // communicate lets go
+      // recv
+      char buffer[1024];
+      int bytesRecv = recv(clientFd, buffer, sizeof(buffer) - 1, 0);
+
+      if (bytesRecv < 0) {
+        // close
+        perror("read");
+        close(clientFd);
+        close(serverFd);
+        exit(1);
+      }
+
+      buffer[bytesRecv] = '\n';
+
+      char *msg = requestHandler(buffer);
+
+      //@unused: replaced by requestHandler()
+      // printf("[SERVER] Recieved data \n %s", buffer);
+
+      // Prepare the response
+      char *http_response = responseHandler(msg);
+
+      // Using SEND to transmit data back to curl
+      // Flag 0 makes send behave like standard write()
+      int bytes_sent = send(
+
+          clientFd, http_response, strlen(http_response), 0
+
+      );
+
+      if (bytes_sent < 0) {
+        perror("Send failed");
+      }
+
+      // cleanup
+      free(http_response);
+
       close(clientFd);
-      close(serverFd);
-      exit(1);
+    } else {
+
+      int *clientFdPtr = malloc(sizeof clientFd);
+      *clientFdPtr = clientFd;
+
+      pthread_t worker_thread;
+      pthread_create(&worker_thread, NULL, handleHttpThread,
+                     (void *)clientFdPtr);
+
+      pthread_detach(worker_thread);
     }
-
-    buffer[bytesRecv] = '\n';
-
-    char *msg = requestHandler(buffer);
-
-    //@unused: replaced by requestHandler()
-    // printf("[SERVER] Recieved data \n %s", buffer);
-
-    // Prepare the response
-    char *http_response = responseHandler(msg);
-
-    // Using SEND to transmit data back to curl
-    // Flag 0 makes send behave like standard write()
-    int bytes_sent = send(
-
-        clientFd, http_response, strlen(http_response), 0
-
-    );
-
-    if (bytes_sent < 0) {
-      perror("Send failed");
-    }
-
-    // cleanup
-    free(http_response);
-
-    close(clientFd);
   }
 
   // cleanup
