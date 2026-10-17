@@ -1,59 +1,79 @@
 #include "http-parser.h"
+#include "server-utils.h"
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
 
-/*
- * Implement all the cflask logic here.
- * 1. web server initialization
- * 2. accept http requests
- * 3. parse http requests
- * 4. dispatch http requests
- * 5. process, generate and send http responses
- */
+#define BACKLOGS 5
 
-int main() {
-  // Example raw HTTP POST request string
-  char raw_request[] = "POST /submit-form?name=Buzz HTTP/1.1\r\n"
-                       "Host: localhost:8080\r\n"
-                       "Content-Type: application/json\r\n"
-                       "Content-Length: 18\r\n"
-                       "\r\n"
-                       "{\"username\":\"dev\"}";
+int main(int argc, char *argv[]) {
 
-  ParsedRequest req;
-  parse_http_request(raw_request, &req);
-
-  // Print parsed output to verify
-  printf("--- Request Line ---\n");
-  printf("Method:  %s\n", req.request_line.method);
-  printf("URI:     %s\n", req.request_line.uri);
-  printf("Version: %s\n\n", req.request_line.version);
-
-  printf("--- Headers parsed: %d ---\n", req.header_count);
-  for (int i = 0; i < req.header_count; i++) {
-    printf("%s -> %s\n", req.headers[i].key, req.headers[i].value);
+  // check for valid arguements
+  if (validArgs(argc, argv) < 0) {
+    exit(1);
   }
 
-  if (req.body) {
-    printf("\n--- Body ---\n%s\n\n", req.body);
+  // get coressponding mode
+  char mode = *argv[1];
+  char *modeValue;
+
+  if (mode == 's') {
+    modeValue = "single-threaded";
+  } else if (mode == 'm') {
+    modeValue = "multi-threaded";
+  } else {
+    modeValue = "thread-pool";
   }
 
-  const char *body =
-      "{\"status\":\"success\",\"message\":\"Hello from C server!\"}";
-  size_t len = strlen(body);
-  size_t response_size = 0;
+  // get PORT
+  int PORT = atoi(argv[2]);
 
-  char *http_response =
-      create_http_response("200 OK", "text/html", body, len, &response_size);
+  // create the socket
+  int serverFd = createBindListenSocket("127.0.0.1", PORT, BACKLOGS);
 
-  if (http_response) {
-    printf("--- Generated HTTP Response (%zu bytes) ---\n", response_size);
-    printf("%s\n", http_response);
-
-    // Clean up allocated memory
-    free(http_response);
+  if (serverFd < 0) {
+    printf("[SERVER] Failed to create and bind to a socket. Exiting ...");
+    exit(1);
   }
+
+  printf("[SERVER] MODE: %s\n", modeValue);
+
+  while (1) {
+
+    // accept incoming connection
+
+    int connFd = createConnectionSocket(serverFd);
+
+    if (connFd < 0) {
+      continue;
+    }
+
+    // single threaded mode
+    if (mode == 's') {
+
+      int status = singleThreadedWorker(connFd);
+      if (status < 0) {
+        printf("[SERVER] Failed to send response\n");
+      }
+      continue;
+
+    } else if (mode == 'm') {
+
+      int status = multiThreadedWorker(connFd);
+      if (status < 0) {
+        printf("[SERVER] ERROR");
+      }
+      continue;
+    }
+  }
+
+  // cleanup
+  close(serverFd);
 
   return 0;
 }
